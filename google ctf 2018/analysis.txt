@@ -1,0 +1,120 @@
+string = "\x78\x01\x01\x01\x03"
+result = 0x5417
+
+for byte in string:
+	byte = ord(byte) ^ result
+	result = byte * 2
+	print hex(result)
+
+if result & 0xffff == 0x8dfa:
+	print "successfully logged in"
+else:
+	print "failed to login"
+	print hex(result & 0xffff)
+
+0x78
+0x1
+0x1
+0x1
+0x3
+
+the password is "\x78\x01\x01\x01\x03"
+
+- the compiler compiles functions that only get called once or some very small functions as macros
+- new_entry might have some bugs
+- handle_put might have a buffer overflow when you write to a new file and give it x size and write some bytes to it and then you write again to the same file but now you give it y size where y > x and you can write more than x bytes to it while malloc only allocated x bytes.
+- what if i give handle_put a negative size? it exits because its over the max and the compares dont seem to be broken.
+
+potentially dangerous functions i should look at again:
+	new_entry
+	entry_path
+	update_directory_links
+
+the programs malloc implementation:
+
+public malloc
+malloc proc near
+sub     rsp, 8
+call    _rand
+and     eax, 1FFFFFFFh
+add     rsp, 8
+or      rax, 40000000h
+retn
+malloc endp
+
+public realloc
+realloc proc near
+mov     rax, rdi
+retn
+realloc endp
+
+public free
+free proc near
+rep retn
+free endp
+
+void* malloc(size_t bytes) {
+	return ((rand() & 0x1fffffff) | 0x40000000);
+}
+
+void* realloc(void* oldmem, size_t bytes) {
+	return oldmem;
+}
+
+void free(void* mem) {};
+
+
+- it uses time(NULL) as as a seed which is very predictable.
+- it doesnt check if the memory being allocated overlaps with a previously allocated area.
+- buffer overflows probably arent gonna be usefull unless we overwrite something in the same block of allocated memory.
+- there is only room for 0x2000 chunks of 0xffff size in the heap and that is when they fit perfectly. they are gonna overwrite each other very fast.
+- we can predict which chunks are gonna overwrite which other chunks and where they are exactly overwriting the other chunk so we can prepare those chunks.
+
+lets start by seeing if we can get any usefull reads (to defeat aslr) and any arbitrary writes assuming that we can overwrite any data on the heap
+
+with handle_get we can read file data (created with handle_put) on the heap which we can overwrite with some pointers from other structures
+
+bool handle_get(char* path) {
+  file_entry* file = find_file(path);
+  if (file) {
+    printf("%zu\n", file->size);
+    writen(file->data, file->size);
+  } else {
+    printf("File \"%s\" not found.\n", path);
+  }
+
+  return true;
+}
+
+what we can do is leak some addresses that are in other structures in this way:
+
+a file entry looks like this on the heap:
+
+|[pointer to parent directory entry][type][name][size][data pointer]|
+
+where the data and size get printed by handle_get. now what we can do is overwrite size and/or data with some other structure that we can write to the heap. in this way we can leak some addresses that get stored in those structures. example:
+
+|[pointer to parent directory entry][type][name][size][data pointer]|
+															|
++-----------------------------------------------------------+
+|
+V
+|AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA|
+			|[some pointer of some struct][some other pointer of some struct][other info in the struct]|
+
+now when we call handle_get we will read the pointers that we have overwritten the data with. in this way we can maybe leak some usefull pointers.
+
+we can probably also get an arbitrary write by overwriting a files data pointer. which should be easy because we can write null bytes with handle_put.
+
+		file1:	|[pointer to parent directory entry][type][name][size][data pointer]|
+|AAAAAAAAAAAAAAAA[pointer to parent directory entry][type][name][size][new data pointer]
+^												        
+|
++------------------------------------------------------------------+
+															       |
+file2: |[pointer to parent directory entry][type][name][size][data pointer]|
+
+now we overwrite file1 with the data allocated by file2 with the same data that was in there before (we can predict the pointer of the parent directory entry) but we change the data pointer to any address we would like to write to. now when we write to file1 with handle_put we can write whatever we want to that adress.
+
+- the 7th call to rand is where we start to control allocating memory.
+-
