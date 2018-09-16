@@ -1,0 +1,144 @@
+- We can set fruit quantity to a negative number to bypass the fruit quantity check (because it will think its less) and overwrite data after it. There are two bytes allocated for the fruit quantity and we can overwrite that with a negative number (-1 = 0xffffffff if its a 32bit integer using twos complement).
+
+- There is a potentially dangerous printf that used data stored on the heap. It prints the fruit info thats on the heap ("Apple From Greek." and "Banana from Australia."). If we can somehow control this data we have a format string vulnerability.
+
+-If we can change the comment of an apple with the banana change function we can overwrite the fruit info because the fruit info is at offset 64 from the comment of apple and the banana change comment writes up to 96 bytes
+
+apple_info_pointer+0x11       apple_info_pointer+0x1b
+|63 69 6E 61 67 72 6F 00 00 00|00| <- we need to overwrite this byte with 0x1
+ +0	+1 +2 +3 +4 +5 +6 +7 +8 +9 +10
+
+too bad we cant change an apple to a banana but what we can do is change a banana to an apple because fgets includes a null byte after the read bytes which will overwrite the fruit type with 0x0 which indicates that it is an apple.
+
+the most important difference between a banana and an apple is where it reads its fruit info from. an apple reads it at offset 0x5c from the fruit info while a banana reads it at offset 0x7c. because of this difference the program allows the shipping address for the apple to be 64 (0x40) bytes long and the shipping address of the banana 96 (0x60) bytes. 0x1c is the offset of the shipping address so 0x1c + 0x40 = 0x5c and 0x1c + 0x60 = 0x7c.
+
+when we make a banana and give it a shipping address of 0x60 bytes we can controll 0x20 bytes after 0x5c which is used as the apples fruit info. we also need to set the quantity to -1 so we overwrite the byte after the quantity (which needs to be non zero for us to change the label). now we change the label and fill it with 10 bytes to overwrite the fruit type (which is the byte after the label) with 0x0 (fgets adds this after the string read) which will indicate that its an apple. now when we call create_invoice it will think that its an apple and thus read the fruit info at offset 0x5c which we control. this "fruit info" is passed to the first argument of printf and since we control this we have a format string vulnerability.
+
+--------------------------------------------------------------------
+
+mans@mans-VirtualBox:~/ctfs/matesctf/fruitshop$ ./fruitretailer_50E291AAFA5777625B18530F5C6F7A92 
+Fruit Shop
+Designed by Quang Nguyen(quangnh89), a member of PiggyBird. My blog: https://develbranch.com
+=====================
+== Fruit Shop ==
+1. Buy fruit
+2. Create invoice
+3. Change label
+4. Change comment
+5. Exit
+Your choice:1
+Would you like to buy apple (1) or banana (2)?:2
+Enter quantity:-1
+Would you like to specify the shipping address? (Y/N)Y
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%p%p%p%p
+Item 1 is added.
+=====================
+== Fruit Shop ==
+1. Buy fruit
+2. Create invoice
+3. Change label
+4. Change comment
+5. Exit
+Your choice:3
+Enter index of packet to change:1
+Enter new label:AAAAAAAAAA
+=====================
+== Fruit Shop ==
+1. Buy fruit
+2. Create invoice
+3. Change label
+4. Change comment
+5. Exit
+Your choice:2
+INVOICE
+|  Quantity|     Fruit|     Label|Unit price|     Total|Additional Information
+|     65535|     Apple|AAAAAAAAAA|         3|     65531|0x7fff2d2433600x7f47bc6c97800x7f47bc3fa2c00x7f47bc8f7700AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%p%p%p%p|
+
+=====================
+== Fruit Shop ==
+1. Buy fruit
+2. Create invoice
+3. Change label
+4. Change comment
+5. Exit
+Your choice:
+
+--------------------------------------------------------------------
+
+as you can see under "Additional Information" our format string gets passed to the first argument
+
+Previous ideas that didnt work out:
+
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+- Maybe we can write the address we want to write -0x1c (change comment writes to the packet +0x1c) to the array of packets and then write to that address with the change comment
+
+- the first address in the fruit info points to the next fruit info in the packets array if there is one
+
+--------------------------------------------------------------------
+
+0x555555757420:	0x00005555557574d0	0xfffbffff00000001
+0x555555757430:	0x41414141414141ff	0x4141414100414141
+0x555555757440:	0x4141414141414141	0x4141414141414141
+0x555555757450:	0x4141414141414141	0x4141414141414141
+0x555555757460:	0x4141414141414141	0x4141414141414141
+0x555555757470:	0x4141414141414141	0x2433312541414141
+0x555555757480:	0x0042424242424270	0x0000000000000000
+0x555555757490:	0x0000000000000000	0x616e614200000000
+0x5555557574a0:	0x206d6f726620616e	0x696c617274737541
+0x5555557574b0:	0x0000000000002e61	0x0000000000000000
+0x5555557574c0:	0x0000000000000000	0x00000000000000b1
+0x5555557574d0:	0x0000000000000000	0xfffbffff00000002
+0x5555557574e0:	0x41414141414141ff	0x4242424200414141
+0x5555557574f0:	0x4242424242424242	0x4242424242424242
+0x555555757500:	0x4242424242424242	0x4242424242424242
+0x555555757510:	0x4242424242424242	0x4242424242424242
+0x555555757520:	0x4242424242424242	0x2433312542424242
+0x555555757530:	0x0043434343434370	0x0000000000000000
+0x555555757540:	0x0000000000000000	0x616e614200000000
+0x555555757550:	0x206d6f726620616e	0x696c617274737541
+0x555555757560:	0x0000000000002e61	0x0000000000000000
+0x555555757570:	0x0000000000000000	0x0000000000020a91
+
+--------------------------------------------------------------------
+
+as you can see at 0x555555757420 which is the first fruit info we have a pointer to the second fruit info. now this is nice and all but why is this useful to us? this is usefull because at the time of our format string vulnerability 0x555555757420 is located on the stack.
+
+--------------------------------------------------------------------
+
+gdb-peda$ x/4gx $rsp
+0x7fffffffdbe0:	0x00007fffffffdbf0	0x0000555555757420
+0x7fffffffdbf0:	0x00007fffffffdc10	0x00005555555554b0
+gdb-peda$ 
+
+--------------------------------------------------------------------
+
+as you can see the address of the first fruit info is on the stack so we can write to it with our format string vulnerability. We want to overwrite this so that we can write to any address with change comment. we can write to 0x0000555555757420 with %7$n.
+
+now when we want to change the comment of our modified fruit info the change comment function asks for the index of the packet we want to change. this index is located at the address we wrote to the next fruit info address +8.
+
+- we probably dont want to overwrite the first pointer in the list but one further down because it screws up the list.
+
+the change comment function checks if its a banana or an apple by checking if the byte at +0x1b is 0 (apple) or 1 (banana). if its neither of those it doesnt change the address. so the address we want to write to needs to have a 0 or a 1 at offset +0x1b. this isnt very convenient so what we can do to write to any address we want is use the change label function and give it 10 bytes so fgets will write a null byte to the 11th byte which is +0x1b (0x11 + 9 + 1 = 0x1b (0 - 9 are our 10 bytes because it starts at offset 0 and the last byte is the null byte that fgets adds)). now we can write a bunch of bytes to any address we want.
+
+the program segfaults when we write the return address of main -0x1c to the list because the loop keeps going with the address located at the address located at the address etc etc till an address contains only 0 but it doesnt find an address containing 0, instead it reaches an address containing a non existent address and then it tries to read from that address resulting in a segfault.
+
+to avoid the segfault we need to find an address that eventually contains only zeroes. the offset of this address from the address we want to write to -0x1c we need to compensate by prepending the offset in bytes to the data we are writing to the address (the address eventually containing only zeroes ofcourse needs to be before the address we are writing to and in reasonable range because change comment only accepts 64 bytes for an apple).
+
+unfortunatly there isnt such an address in range so we need to come with another idea.
+
+what we can do is look on the stack if there are any stack addresses that we can write to so that we can write the address we want to write to to one of these addresses and then write to it. this way we can write to any address we want. but now we have another problem, printf doesnt allow to print so many spaces for example %140737488346136x wont work. we need multiple writes, do we?
+
+- leak some addresses with our format string vulnerability to defeat aslr
+
+- write the address we want to write (the return address of main) -0x1c -offset to 0 to the first address of any fruit info in our list of packets (preferably not the first one because it screws up the list).
+
+- change the fruit type of the address we want to write to to 0 by calling change label with a packet index located at the address we want to write to -0x1c +8 which is a qword. (we do this because change comment checks if the fruit type is 0 or 1 otherwise it wont write anything)
+
+- call change comment with the our modified packets packet index write a rop chain to call system("/bin/sh") to the return address of main
+
+- select the exit option in the shop and get a shell
+
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+we dont control any data on the stack so we cant put the address we want to write to on the stack so we have to use addresses that are on the stack already. with %<0x0-0xffff>c%<offset>$hn we can write 2 bytes to an address at <offset> where <offset> is the xth argument that printf gets after the format string, so for example %6$hn will write to the 6th argument that printf gets after the format string. so now we can modify a pointer on the stack where atleast every byte except the last 2 are equal to the address we want to write to. this way we can write our ropchain to the return address.
