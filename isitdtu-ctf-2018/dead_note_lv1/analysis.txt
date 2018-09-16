@@ -1,0 +1,4 @@
+- a bunch of rwx sections including stack and heap
+- no limit on the note index so we can write the address pointing to our string on the heap to any address we want
+- we can only write 3 bytes to the heap because it checks with strlen if the length is less our equal to 3
+- we can overwrite strlen got entry with a function that returns 0
